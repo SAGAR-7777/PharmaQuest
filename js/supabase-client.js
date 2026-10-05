@@ -1,5 +1,4 @@
-// Supabase Client Initializer with Dynamic Config Loader & Offline Fallback Provider
-// Automatically connects with credentials from /api/config or manual project settings
+import { apiUrl } from "./config.js";
 
 let supabaseInstance = null;
 let supabaseConfig = {
@@ -9,10 +8,10 @@ let supabaseConfig = {
   aiConfigured: false
 };
 
-// Fetch configuration from server endpoint /api/config
+// Fetch configuration from backend endpoint /api/config
 export async function loadServerConfig() {
   try {
-    const res = await fetch('/api/config');
+    const res = await fetch(apiUrl('/api/config'));
     if (res.ok) {
       const data = await res.json();
       supabaseConfig.url = data.supabaseUrl || '';
@@ -21,6 +20,12 @@ export async function loadServerConfig() {
     }
   } catch (err) {
     console.warn("Could not fetch /api/config from server, checking local overrides", err);
+  }
+
+  // Also check window globals (optional static configuration)
+  if (typeof window !== 'undefined' && window.__SUPABASE_URL__ && window.__SUPABASE_ANON_KEY__) {
+    supabaseConfig.url = window.__SUPABASE_URL__;
+    supabaseConfig.anonKey = window.__SUPABASE_ANON_KEY__;
   }
 
   // Also check localStorage for manual user override in developer mode

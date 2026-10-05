@@ -7,6 +7,7 @@ import { QUESTIONS_BANK, VIVA_QUESTIONS } from "./questions-data.js";
 import { PRACTICAL_EXPERIMENTS } from "./practicals-data.js";
 import { CRUDE_DRUGS } from "./crude-drugs-data.js";
 import { HETEROCYCLIC_RINGS, STARRED_DRUGS } from "./chemistry-data.js";
+import { apiUrl } from "./config.js";
 
 class PharmaQuestApp {
   constructor() {
@@ -1838,8 +1839,9 @@ class PharmaQuestApp {
     if (input) input.disabled = true;
 
     try {
-      // Secure server-side call to /api/ai/chat (Zero API key exposure)
-      const res = await fetch('/api/ai/chat', {
+      // Secure server-side call to /api/ai/chat (works across local and Render production)
+      const chatEndpoint = apiUrl('/api/ai/chat');
+      const res = await fetch(chatEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1854,7 +1856,7 @@ class PharmaQuestApp {
       history.pop(); // remove loading placeholder
 
       if (result.configured === false) {
-        ui.showToast("Groq API key required in server .env", "info");
+        ui.showToast("Groq API key required in server environment", "info");
       }
 
       if (result.structuredContent) {
@@ -1872,12 +1874,13 @@ class PharmaQuestApp {
       }
     } catch (e) {
       history.pop();
+      const chatEndpoint = apiUrl('/api/ai/chat');
       history.push({
         sender: "ai",
         timestamp: "Notice",
-        text: "Could not reach server AI endpoint. Ensure local server is active at http://127.0.0.1:3000."
+        text: `Could not reach server AI endpoint (${chatEndpoint}). Ensure backend server is active.`
       });
-      ui.showToast("Failed to connect to local server", "error");
+      ui.showToast("Failed to connect to backend server", "error");
     }
 
     store.set({ aiHistory: history });
