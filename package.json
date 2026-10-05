@@ -1,0 +1,22 @@
+{
+  "name": "pharmaquest",
+  "version": "1.0.0",
+  "description": "PHARMAQUEST — D.Pharm Digital Pharmacy Lab & Multi-User Web Application",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "d-pharm",
+    "pci",
+    "pharmacy",
+    "groq"
+  ],
+  "author": "PHARMAQUEST",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "groq-sdk": "^1.6.0"
+  }
+}
