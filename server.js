@@ -11,7 +11,7 @@ try {
   console.warn("groq-sdk could not be loaded:", e.message);
 }
 
-// Dynamic .env file parser (reloads keys whenever called)
+// Dynamic .env file parser (preserves environment variables already set by host platform like Render)
 function loadEnv() {
   const envPath = path.join(__dirname, '.env');
   if (fs.existsSync(envPath)) {
@@ -23,7 +23,10 @@ function loadEnv() {
       if (eqIdx > 0) {
         const key = trimmed.slice(0, eqIdx).trim();
         const val = trimmed.slice(eqIdx + 1).trim();
-        process.env[key] = val;
+        // Do not overwrite existing environment variables set by host platform (e.g. Render)
+        if (process.env[key] === undefined) {
+          process.env[key] = val;
+        }
       }
     });
   }
@@ -43,13 +46,42 @@ const MIME_TYPES = {
   '.woff2': 'font/woff2'
 };
 
-// Helper to send JSON responses
-function sendJSON(res, statusCode, data) {
+// Determine Allowed Origin based on request and environment settings
+function getCorsHeaders(req) {
+  const requestOrigin = (req && req.headers && req.headers.origin) || '';
+  const configuredOrigin = process.env.ALLOWED_ORIGIN ? process.env.ALLOWED_ORIGIN.trim() : '';
+
+  let allowedOrigin = '*';
+
+  if (configuredOrigin && configuredOrigin !== '*') {
+    const allowedList = configuredOrigin.split(',').map(o => o.trim().replace(/\/+$/, ''));
+    if (allowedList.includes(requestOrigin.replace(/\/+$/, ''))) {
+      allowedOrigin = requestOrigin;
+    } else {
+      allowedOrigin = allowedList[0];
+    }
+  } else if (
+    requestOrigin.startsWith('http://localhost') || 
+    requestOrigin.startsWith('http://127.0.0.1') ||
+    requestOrigin.includes('.vercel.app')
+  ) {
+    allowedOrigin = requestOrigin;
+  }
+
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400'
+  };
+}
+
+// Helper to send JSON responses with proper CORS headers
+function sendJSON(res, statusCode, data, req = null) {
+  const corsHeaders = getCorsHeaders(req);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+    ...corsHeaders
   });
   res.end(JSON.stringify(data));
 }
@@ -60,7 +92,7 @@ async function callGroqAI(apiKey, userPrompt, context = {}) {
     throw new Error("Official groq-sdk package is not available on the server. Please run npm install groq-sdk.");
   }
 
-  const model = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'llama-3.3-70b-versatile';
+  const model = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'qwen/qwen3.8-27b';
   const groq = new Groq({ apiKey });
 
   const systemPrompt = `You are Pharma AI, the Lead Pharmaceutical Scientist and Senior Academic Examiner for Diploma in Pharmacy (D.Pharm) students under the Pharmacy Council of India (PCI) ER-2020 Part I syllabus.
@@ -120,24 +152,31 @@ Output strictly valid JSON and nothing else.`;
 const server = http.createServer((req, res) => {
   // CORS Preflight
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    });
+    const corsHeaders = getCorsHeaders(req);
+    res.writeHead(204, corsHeaders);
     res.end();
     return;
   }
 
-  const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const reqPath = decodeURI(parsedUrl.pathname);
+
+  // --- API ROUTE: GET /api/health ---
+  // Lightweight health check endpoint for Render deployment monitoring and uptime verification
+  if (reqPath === '/api/health' && req.method === 'GET') {
+    sendJSON(res, 200, {
+      status: 'ok',
+      app: 'PHARMAQUEST'
+    }, req);
+    return;
+  }
 
   // --- API ROUTE: GET /api/config ---
   // Exposes only safe public client configurations (Never secret keys like GROQ_API_KEY)
   if (reqPath === '/api/config' && req.method === 'GET') {
     loadEnv();
     const hasGroq = Boolean(process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.trim().length > 0);
-    const activeModel = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'llama-3.3-70b-versatile';
+    const activeModel = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'qwen/qwen3.8-27b';
 
     sendJSON(res, 200, {
       supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -145,7 +184,7 @@ const server = http.createServer((req, res) => {
       aiConfigured: hasGroq,
       aiProvider: 'groq',
       groqModel: activeModel
-    });
+    }, req);
     return;
   }
 
@@ -166,34 +205,34 @@ const server = http.createServer((req, res) => {
             success: false,
             configured: true,
             error: 'Prompt cannot be empty. Please ask a D.Pharm question or topic.'
-          });
+          }, req);
           return;
         }
 
         const groqKey = process.env.GROQ_API_KEY ? process.env.GROQ_API_KEY.trim() : '';
-        const activeModel = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'llama-3.3-70b-versatile';
+        const activeModel = (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) || 'qwen/qwen3.8-27b';
 
-        // Requirement 12: If GROQ_API_KEY is missing, do not crash the website. Show a clear "AI is not configured" message.
+        // If GROQ_API_KEY is missing, do not crash the website. Show a clear "AI is not configured" message.
         if (!groqKey) {
           sendJSON(res, 200, {
             success: false,
             configured: false,
             provider: 'groq',
             error: 'AI is not configured',
-            message: 'Pharma AI is ready. To enable live Groq intelligence, configure GROQ_API_KEY in your .env file.',
+            message: 'Pharma AI is ready. To enable live Groq intelligence, configure GROQ_API_KEY in your Render/server environment variables.',
             structuredContent: {
               title: "Groq AI Configuration Required",
               simpleExplanation: "Pharma AI Assistant is powered exclusively by the official groq-sdk package on Groq's ultra-fast LPU infrastructure, but GROQ_API_KEY has not been set yet in your server environment.",
-              examAnswer: "Setup Steps:\n1. Open the file .env in your project folder\n2. Add: GROQ_API_KEY=gsk_your_groq_api_key\n3. (Optional) Set: GROQ_MODEL=llama-3.3-70b-versatile\n4. Ask any question to activate instant Groq responses!",
+              examAnswer: "Setup Steps:\n1. On Render: Add Environment Variable GROQ_API_KEY\n2. Add GROQ_MODEL=qwen/qwen3.8-27b\n3. Restart backend service to activate live Groq intelligence!",
               keyPoints: [
                 `Configured Model: ${activeModel}`,
                 "Official groq-sdk package installed and active on server",
                 "The Groq API key is strictly server-side and never exposed to the client browser"
               ],
               viva: "Sample Viva: What is the primary analytical basis of the Limit Test for Iron as per the Indian Pharmacopoeia?",
-              practice: "Configure GROQ_API_KEY in .env to begin real-time Groq inference."
+              practice: "Configure GROQ_API_KEY in server environment to begin real-time Groq inference."
             }
-          });
+          }, req);
           return;
         }
 
@@ -210,10 +249,9 @@ const server = http.createServer((req, res) => {
           provider: 'groq',
           model: activeModel,
           structuredContent: structuredResult
-        });
+        }, req);
       } catch (err) {
         console.error("Server Groq AI Error:", err.message);
-        // Requirement 13: Handle Groq/API errors gracefully
         sendJSON(res, 200, {
           success: false,
           configured: true,
@@ -222,16 +260,16 @@ const server = http.createServer((req, res) => {
           structuredContent: {
             title: "Groq API Communication Notice",
             simpleExplanation: `Unable to complete Groq request: ${err.message}`,
-            examAnswer: "Please verify that your GROQ_API_KEY in .env is valid and active at console.groq.com.",
+            examAnswer: "Please verify that your GROQ_API_KEY in server environment is valid and active at console.groq.com.",
             keyPoints: [
-              `Target Model: ${process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'}`,
+              `Target Model: ${process.env.GROQ_MODEL || 'qwen/qwen3.8-27b'}`,
               "Check your internet connection and Groq quota status",
               "Server caught the error safely without interrupting the application"
             ],
             viva: "Sample Viva: In Pharmaceutical Quality Assurance, what is the role of validation and calibration?",
-            practice: "Check server logs or verify your GROQ_API_KEY in .env"
+            practice: "Check server logs or verify your GROQ_API_KEY in environment variables"
           }
-        });
+        }, req);
       }
     });
     return;
@@ -277,6 +315,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`PHARMAQUEST Server active at http://127.0.0.1:${PORT}`);
+// Bind to 0.0.0.0 for Render production host compatibility
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`PHARMAQUEST Server active on port ${PORT}`);
 });
